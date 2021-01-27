@@ -9,9 +9,9 @@ import (
 
 func main() {
 
-	w := wind.InitWinds()
+	p := wind.InitWinds()
 
-	router := InitServer(w)
-	log.Println("Start server on port 8090")
-	log.Fatal(http.ListenAndServe(":8090", router))
+	router := InitServer(p)
+	log.Println("Start server on port 8091")
+	log.Fatal(http.ListenAndServe(":8091", router))
 }

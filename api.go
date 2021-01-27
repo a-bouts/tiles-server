@@ -14,17 +14,18 @@ import (
 )
 
 type server struct {
-	w *wind.Winds
+	p wind.Providers
 }
 
-func InitServer(w *wind.Winds) *mux.Router {
+func InitServer(p wind.Providers) *mux.Router {
 
 	router := mux.NewRouter().StrictSlash(true)
 
-	s := server{w: w}
+	s := server{p: p}
 
 	router.HandleFunc("/tiles/-/healthz", s.healthz).Methods(http.MethodGet)
-	router.HandleFunc("/tiles/wind/{t}/{z}/{x}/{y}", s.getWindTile).Methods(http.MethodGet)
+	router.HandleFunc("/tiles/wind/{t}/{z}/{x}/{y}", s.oldGetWindTile).Methods(http.MethodGet)
+	router.HandleFunc("/tiles/wind/{p}/{t}/{z}/{x}/{y}", s.getWindTile).Methods(http.MethodGet)
 
 	return router
 }
@@ -38,6 +39,8 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) getWindTile(w http.ResponseWriter, r *http.Request) {
+	p := mux.Vars(r)["p"]
+
 	t := mux.Vars(r)["t"]
 	z, err := strconv.Atoi(mux.Vars(r)["z"])
 	if err != nil {
@@ -63,7 +66,50 @@ func (s *server) getWindTile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tile := wind.GenerateTile(s.w, z, x, y, m)
+	tile := wind.GenerateTile(s.p[p], z, x, y, m)
+
+	buffer := new(bytes.Buffer)
+	if err := jpeg.Encode(buffer, tile, nil); err != nil {
+		log.Println("unable to encode image.")
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+
+	w.Header().Set("Cache-Control", "public, max-age=604800, immutable")
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Content-Length", strconv.Itoa(len(buffer.Bytes())))
+	if _, err := w.Write(buffer.Bytes()); err != nil {
+		log.Println("unable to write image.")
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (s *server) oldGetWindTile(w http.ResponseWriter, r *http.Request) {
+	t := mux.Vars(r)["t"]
+	z, err := strconv.Atoi(mux.Vars(r)["z"])
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	x, err := strconv.Atoi(mux.Vars(r)["y"])
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	y, err := strconv.Atoi(mux.Vars(r)["x"])
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	log.Println(t, z, x, y)
+
+	m, err := time.Parse("200601021504", t)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	tile := wind.GenerateTile(s.p["noaa"], z, x, y, m)
 
 	buffer := new(bytes.Buffer)
 	if err := jpeg.Encode(buffer, tile, nil); err != nil {

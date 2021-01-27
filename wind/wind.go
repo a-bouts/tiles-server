@@ -15,28 +15,39 @@ import (
 	"time"
 
 	"github.com/jasonlvhit/gocron"
-	"github.com/nilsmagnus/grib/griblib"
+	"github.com/phtheirichthys/grib/griblib"
 )
+
+type Providers map[string]*Winds
 
 type Winds struct {
 	winds map[string][]*Wind
 	lock  sync.RWMutex
 }
 
-func InitWinds() *Winds {
+func InitWinds() Providers {
 	log.Println("Load winds")
-	w := &Winds{
-		winds: LoadAll(),
+	p := Providers{"noaa": &Winds{
+		winds: LoadAll("noaa"),
 		lock:  sync.RWMutex{},
-	}
+	}, "meteo-france": &Winds{
+		winds: LoadAll("meteo-france"),
+		lock:  sync.RWMutex{},
+	}}
 
 	s := gocron.NewScheduler()
 	jobxx := s.Every(15).Seconds()
-	jobxx.Do(w.Merge)
+	jobxx.Do(p.MergeAll)
 
 	go s.Start()
 
-	return w
+	return p
+}
+
+func (ps Providers) MergeAll() {
+	for p, w := range ps {
+		w.Merge(p)
+	}
 }
 
 func (w *Winds) FindWinds(m time.Time) ([]*Wind, []*Wind, float64) {
@@ -89,14 +100,14 @@ func roundHours(hours int, interval int) string {
 	return ""
 }
 
-func (w *Winds) Merge() error {
+func (w *Winds) Merge(provider string) error {
 	w.lock.Lock()
 	defer w.lock.Unlock()
 
 	// On supprime les fichiers qui ne sont plus là
 	var toRemove []string
 	for k, ws := range w.winds {
-		if _, err := os.Stat("grib-data/" + ws[0].File); os.IsNotExist(err) {
+		if _, err := os.Stat("grib-data/" + provider + "/" + ws[0].File); os.IsNotExist(err) {
 			toRemove = append(toRemove, k)
 		}
 	}
@@ -106,7 +117,7 @@ func (w *Winds) Merge() error {
 	}
 
 	var files []string
-	err := filepath.Walk("grib-data/", func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk("grib-data/"+provider+"/", func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			log.Println(err)
 		} else if info.Mode().IsRegular() && !strings.HasSuffix(info.Name(), ".tmp") {
@@ -174,7 +185,7 @@ func (w *Winds) Merge() error {
 				}
 			}
 
-			wind := Init(date, file)
+			wind := Init(provider, date, file)
 			log.Println("Init", sdate, wind.File)
 			w.winds[sdate] = append(w.winds[sdate], &wind)
 		}
@@ -183,10 +194,10 @@ func (w *Winds) Merge() error {
 	return nil
 }
 
-func LoadAll() map[string][]*Wind {
+func LoadAll(provider string) map[string][]*Wind {
 	winds := make(map[string][]*Wind)
 	var files []string
-	err := filepath.Walk("grib-data/", func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk("grib-data/"+provider+"/", func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			log.Println(err)
 		} else if info.Mode().IsRegular() && !strings.HasSuffix(info.Name(), ".tmp") {
@@ -248,7 +259,7 @@ func LoadAll() map[string][]*Wind {
 			f, _ := strconv.Atoi(strings.Split(file, ".")[1][1:])
 			date = date.Add(time.Hour * time.Duration(f))
 			sdate := date.Format("2006010215")
-			wind := Init(date, file)
+			wind := Init(provider, date, file)
 			log.Println("Init", sdate, wind.File)
 			winds[sdate] = append(winds[sdate], &wind)
 		}
@@ -256,7 +267,7 @@ func LoadAll() map[string][]*Wind {
 	return winds
 }
 
-func load(winds map[string]Wind, m time.Time) bool {
+func load(provider string, winds map[string]Wind, m time.Time) bool {
 	stamp := m.Format("20060102") + roundHours(m.Hour(), 6)
 
 	log.Println("Load forecast", stamp)
@@ -274,7 +285,7 @@ func load(winds map[string]Wind, m time.Time) bool {
 		sdate := date.Format("2006010215")
 		_, exists := winds[sdate]
 		if !exists {
-			wind := Init(date, stamp+".f"+fmt.Sprintf("%03d", f))
+			wind := Init(provider, date, stamp+".f"+fmt.Sprintf("%03d", f))
 			log.Println("Init", sdate, wind.File)
 			winds[sdate] = wind
 		}
@@ -312,17 +323,17 @@ func (w Wind) buildGrid(data []float64) [][]float64 {
 	return grid
 }
 
-func Init(date time.Time, file string) Wind {
+func Init(provider string, date time.Time, file string) Wind {
 	w := Wind{Date: date, File: file}
-	gribfile, _ := os.Open("grib-data/" + file)
+	gribfile, _ := os.Open("grib-data/" + provider + "/" + file)
 	messages, _ := griblib.ReadMessages(gribfile)
 	for _, message := range messages {
 		if message.Section0.Discipline == uint8(0) && message.Section4.ProductDefinitionTemplate.ParameterCategory == uint8(2) && message.Section4.ProductDefinitionTemplate.FirstSurface.Type == 103 && message.Section4.ProductDefinitionTemplate.FirstSurface.Value == 10 {
 			grid0, _ := message.Section3.Definition.(*griblib.Grid0)
-			w.Lat0 = float64(grid0.La1 / 1e6)
-			w.Lon0 = float64(grid0.Lo1 / 1e6)
-			w.ΔLat = float64(grid0.Di / 1e6)
-			w.ΔLon = float64(grid0.Dj / 1e6)
+			w.Lat0 = float64(grid0.La1) / 1e6
+			w.Lon0 = float64(grid0.Lo1) / 1e6
+			w.ΔLat = float64(grid0.Di) / 1e6
+			w.ΔLon = float64(grid0.Dj) / 1e6
 			w.NLat = grid0.Nj
 			w.NLon = grid0.Ni
 			if message.Section4.ProductDefinitionTemplate.ParameterNumber == 2 {
